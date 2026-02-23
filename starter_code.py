@@ -23,7 +23,8 @@ from __future__ import annotations
 import csv
 import os
 import time
-import tracemalloc
+import tracemalloc\
+import json
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
@@ -35,10 +36,10 @@ from typing import Callable, Dict, List, Optional, Any, Tuple
 DATASETS_DIR = "datasets"
 
 DATASET_PATHS = {
-    "orders": os.path.join(DATASETS_DIR, "orders.csv"),
-    "products": os.path.join(DATASETS_DIR, "products.csv"),
-    "inventory": os.path.join(DATASETS_DIR, "inventory.csv"),
-    "activity_log": os.path.join(DATASETS_DIR, "activity_log.csv"),
+    "orders": os.path.join(DATASETS_DIR, "orders.json"),
+    "products": os.path.join(DATASETS_DIR, "products.json"),
+    "inventory": os.path.join(DATASETS_DIR, "inventory.json"),
+    "activity_log": os.path.join(DATASETS_DIR, "activity_log.json"),
 }
 
 # If your CSVs have a known numeric column (like "price" or "timestamp"),
@@ -204,35 +205,68 @@ def demonstrate_stability() -> None:
 # PART 3: PERFORMANCE BENCHMARKING
 # =========================
 
-def load_dataset_numbers(dataset_path: str,
-                         column: Optional[str] = DATASET_COLUMN,
-                         limit: Optional[int] = None) -> List[int]:
+def load_dataset_numbers(dataset_path: str, limit: Optional[int] = None) -> List[int]:
     """
-    Loads a CSV and returns a list of integers from a numeric column.
-    - If column is None, uses the first column in the CSV.
-    - If values are floats, they are converted safely.
+    Loads a JSON dataset and returns a list of integers.
+    Supports common shapes:
+      - a plain list of numbers: [1,2,3,...]
+      - a list of dicts with a numeric field
+      - a dict containing a list under keys like "data", "values", "items"
     """
-    nums: List[int] = []
+    with open(dataset_path, "r", encoding="utf-8") as f:
+        obj = json.load(f)
 
-    with open(dataset_path, "r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        if not reader.fieldnames:
-            raise ValueError(f"No columns found in CSV: {dataset_path}")
+    # Case 1: plain list
+    if isinstance(obj, list):
+        data = obj
 
-        use_col = column if column in reader.fieldnames else reader.fieldnames[0]
+    # Case 2: dict wrapper
+    elif isinstance(obj, dict):
+        # try common keys
+        for k in ("data", "values", "items", "records"):
+            if k in obj and isinstance(obj[k], list):
+                data = obj[k]
+                break
+        else:
+            raise ValueError(f"Unrecognized JSON structure in {dataset_path}: dict keys={list(obj.keys())}")
 
-        for row in reader:
-            raw = row.get(use_col, "")
-            try:
-                nums.append(int(raw))
-            except ValueError:
-                nums.append(int(float(raw)))
+    else:
+        raise ValueError(f"Unrecognized JSON structure in {dataset_path}: type={type(obj)}")
 
-            if limit is not None and len(nums) >= limit:
+    # If the list is numbers already:
+    if data and isinstance(data[0], (int, float)):
+        nums = [int(x) for x in data]
+
+    # If the list is dicts: pick a numeric field
+    elif data and isinstance(data[0], dict):
+        # Try common numeric keys in sorting datasets
+        candidate_keys = ["value", "price", "timestamp", "id", "key", "amount", "qty", "quantity"]
+        numeric_key = None
+        for ck in candidate_keys:
+            if ck in data[0]:
+                numeric_key = ck
                 break
 
-    return nums
+        # Otherwise pick first numeric-looking field
+        if numeric_key is None:
+            for k, v in data[0].items():
+                if isinstance(v, (int, float)):
+                    numeric_key = k
+                    break
 
+        if numeric_key is None:
+            raise ValueError(f"Could not find numeric field in JSON objects for {dataset_path}")
+
+        nums = []
+        for row in data:
+            nums.append(int(row[numeric_key]))
+    else:
+        nums = []
+
+    if limit is not None:
+        nums = nums[:limit]
+
+    return nums
 
 @dataclass
 class BenchmarkResult:
